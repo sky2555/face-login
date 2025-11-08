@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Face Login Cross-Device (Firebase)</title>
+<style>
+  body { font-family: sans-serif; text-align: center; margin:0; padding:20px; background:#f5f5f5; }
+  video, canvas { border-radius:12px; width:100%; max-width:400px; height:auto; }
+  button { margin:10px 5px; padding:10px 20px; font-size:16px; background:#0078ff; color:white; border:none; border-radius:10px; cursor:pointer; }
+  button:hover { background:#005ccc; }
+  input { padding:8px; margin-top:10px; font-size:14px; width:80%; max-width:300px; }
+  #home-section { display:none; margin-top:50px; }
+  #status { margin-top:12px; height:24px; }
+  .success { color:green; }
+  .error { color:red; }
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+
+<script src="https://www.gstatic.com/firebasejs/8.6.8/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.6.8/firebase-database.js"></script>
+
+</head>
+<body>
+
+<div id="login-section">
+  <h2>เข้าสู่ระบบด้วยใบหน้า (Cross-Device)</h2>
+  <div style="position:relative; display:inline-block;">
+    <video id="camera" autoplay playsinline></video>
+    <canvas id="overlay" width="400" height="300" style="position:absolute; top:0; left:0;"></canvas>
+  </div>
+  <br>
+  <input id="username" placeholder="ชื่อผู้ใช้ (สำหรับลงทะเบียน)"><br>
+  <button id="registerBtn">ลงทะเบียน</button>
+  <button id="loginBtn">ล็อกอิน</button>
+  <div id="status"></div>
+</div>
+
+<div id="home-section">
+  <h1>🎉 ยินดีต้อนรับ!</h1>
+  <p>ล็อกอินสำเร็จแล้ว</p>
+  <button onclick="logout()">ออกจากระบบ</button>
+</div>
+
+<script>
+// =========================================================
+// FIREBASE CONFIGURATION & INITIALIZATION
+// =========================================================
+const firebaseConfig = {
+  apiKey: "AIzaSyB8Z6WMkwr9Rv3yIs4f72RmukTsMXw4NmI",
+  authDomain: "armngo-60581.firebaseapp.com",
+  projectId: "armngo-60581",
+  storageBucket: "armngo-60581.firebasestorage.app",
+  messagingSenderId: "603474147994",
+  appId: "1:603474147994:web:78793add40633a937d7d23",
+  // measurementId: "G-9H05QMMGLV" // ไม่จำเป็น
+};
+
+// 1. เริ่มต้น Firebase App
+firebase.initializeApp(firebaseConfig); 
+
+// 2. เชื่อมต่อ Realtime Database และกำหนด Node หลัก
+const database = firebase.database();
+const faceRef = database.ref('face_users'); // Node ที่ใช้เก็บ Face Descriptor (เทียบเท่ากับตารางใน DB)
+
+
+// =========================================================
+// FACE LOGIN CORE LOGIC
+// =========================================================
+const video = document.getElementById('camera');
+const overlay = document.getElementById('overlay');
+const ctx = overlay.getContext('2d');
+const statusEl = document.getElementById('status');
+
+function status(text,type=''){ statusEl.innerHTML=`<span class="${type}">${text}</span>`; }
+
+// เปิดกล้อง
+async function startCamera(){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}, audio:false});
+    video.srcObject = stream;
+  }catch(err){ alert("ไม่สามารถเปิดกล้องได้: "+err); }
+}
+startCamera();
+
+// โหลดโมเดล
+async function loadModels(){
+  status('กำลังโหลดโมเดล...');
+  const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
+  await Promise.all([
+    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+    faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL)
+  ]);
+  status('โหลดโมเดลเสร็จแล้ว');
+}
+loadModels();
+
+// จับ descriptor
+async function getFaceDescriptor(){
+  const options=new faceapi.TinyFaceDetectorOptions({inputSize:224});
+  const detection = await faceapi.detectSingleFace(video,options).withFaceLandmarks().withFaceDescriptor();
+  if(!detection) return null;
+  return detection.descriptor;
+}
+
+// overlay
+async function drawOverlay(){
+  if(video.readyState<2) return requestAnimationFrame(drawOverlay);
+  const options=new faceapi.TinyFaceDetectorOptions({inputSize:224});
+  const detections=await faceapi.detectAllFaces(video,options).withFaceLandmarks();
+  ctx.clearRect(0,0,overlay.width,overlay.height);
+  detections.forEach(det=>{
+    const box=det.detection.box;
+    ctx.strokeStyle='lime';
+    ctx.lineWidth=2;
+    ctx.strokeRect(box.x,box.y,box.width,box.height);
+  });
+  requestAnimationFrame(drawOverlay);
+}
+drawOverlay();
+
+// =========================================================
+// FIREBASE REGISTER & LOGIN IMPLEMENTATION
+// =========================================================
+
+// ลงทะเบียน (ใช้ Firebase .set() เพื่อบันทึก)
+document.getElementById('registerBtn').addEventListener('click',async()=>{
+  const name=document.getElementById('username').value.trim();
+  if(!name){ status('กรุณาใส่ชื่อผู้ใช้','error'); return; }
+  status('กำลังจับใบหน้า...');
+  const desc=await getFaceDescriptor();
+  if(!desc){ status('ไม่พบใบหน้า ลองปรับมุม/แสง','error'); return; }
+
+  status('กำลังบันทึกข้อมูลใบหน้าไปที่ Firebase...');
+  
+  // **บันทึกข้อมูลไปที่ Firebase (Cross-Device)**
+  try {
+    // ใช้ child(name) เป็น key และ Array.from(desc) เป็น Value
+    await faceRef.child(name).set(Array.from(desc)); 
+    status(`ลงทะเบียนสำเร็จ: ${name}`, 'success');
+  } catch(e) {
+    status(`Error: ลงทะเบียนไม่สำเร็จ: ${e.message}`, 'error');
+  }
+});
+
+// ล็อกอิน (ใช้ Firebase .once('value') เพื่อดึงข้อมูลทั้งหมด)
+document.getElementById('loginBtn').addEventListener('click',async()=>{
+  status('ตรวจสอบใบหน้า...');
+  const probe=await getFaceDescriptor();
+  if(!probe){ status('ไม่พบใบหน้า ลองปรับมุม/แสง','error'); return; }
+  
+  status('กำลังดึงข้อมูลใบหน้าจากฐานข้อมูลส่วนกลาง...');
+
+  // **ดึงข้อมูลทั้งหมดจาก Firebase (Cross-Device)**
+  const snapshot = await faceRef.once('value');
+  const db = snapshot.val(); 
+
+  if (!db || !Object.keys(db).length) { status('ยังไม่มีผู้ใช้ลงทะเบียนในฐานข้อมูล', 'error'); return; }
+
+  let best={name:null,dist:Infinity};
+  
+  // โค้ดเปรียบเทียบใบหน้าเดิม
+  for(const [name,arr] of Object.entries(db)){
+    const known=new Float32Array(arr);
+    let d=0;
+    for(let i=0;i<probe.length;i++){ const diff=probe[i]-known[i]; d+=diff*diff; }
+    d=Math.sqrt(d);
+    if(d<best.dist) best={name,dist:d};
+  }
+  
+  const THRESHOLD=0.6;
+  if(best.dist<=THRESHOLD){
+    status(`ล็อกอินสำเร็จ: ${best.name}`,'success');
+    document.getElementById('login-section').style.display='none';
+    document.getElementById('home-section').style.display='block';
+  }else{
+    status(`ไม่พบผู้ใช้ตรงกัน (Dist: ${best.dist.toFixed(3)})`,'error');
+  }
+});
+
+function logout(){
+  document.getElementById('home-section').style.display='none';
+  document.getElementById('login-section').style.display='block';
+}
+</script>
+</body>
+</html>
