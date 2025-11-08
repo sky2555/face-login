@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Face Login Cross-Device</title>
+<style>
+  body { font-family: sans-serif; text-align: center; margin:0; padding:20px; background:#f5f5f5; }
+  video, canvas { border-radius:12px; width:100%; max-width:400px; height:auto; }
+  button { margin:10px 5px; padding:10px 20px; font-size:16px; background:#0078ff; color:white; border:none; border-radius:10px; cursor:pointer; }
+  button:hover { background:#005ccc; }
+  input { padding:8px; margin-top:10px; font-size:14px; width:80%; max-width:300px; }
+  #home-section { display:none; margin-top:50px; }
+  #status { margin-top:12px; height:24px; }
+  .success { color:green; }
+  .error { color:red; }
+</style>
+</head>
+<body>
+
+<div id="login-section">
+  <h2>เข้าสู่ระบบด้วยใบหน้า</h2>
+  <div style="position:relative; display:inline-block;">
+    <video id="camera" autoplay playsinline></video>
+    <canvas id="overlay" width="400" height="300" style="position:absolute; top:0; left:0;"></canvas>
+  </div>
+  <br>
+  <input id="username" placeholder="ชื่อผู้ใช้ (สำหรับลงทะเบียน)"><br>
+  <button id="registerBtn">ลงทะเบียน</button>
+  <button id="loginBtn">ล็อกอิน</button>
+  <div id="status"></div>
+</div>
+
+<div id="home-section">
+  <h1>🎉 ยินดีต้อนรับ!</h1>
+  <p>ล็อกอินสำเร็จแล้ว</p>
+  <button onclick="logout()">ออกจากระบบ</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+<script>
+const video = document.getElementById('camera');
+const overlay = document.getElementById('overlay');
+const ctx = overlay.getContext('2d');
+const statusEl = document.getElementById('status');
+const STORAGE_KEY = 'face_login_db_v1';
+
+function status(text,type=''){ statusEl.innerHTML=`<span class="${type}">${text}</span>`; }
+
+// เปิดกล้อง
+async function startCamera(){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}, audio:false});
+    video.srcObject = stream;
+  }catch(err){ alert("ไม่สามารถเปิดกล้องได้: "+err); }
+}
+startCamera();
+
+// โหลดโมเดล
+async function loadModels(){
+  status('กำลังโหลดโมเดล...');
+  const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
+  await Promise.all([
+    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+    faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL)
+  ]);
+  status('โหลดโมเดลเสร็จแล้ว');
+}
+loadModels();
+
+// DB
+function loadDB(){ const raw=localStorage.getItem(STORAGE_KEY); if(!raw)return{}; try{return JSON.parse(raw);}catch(e){return{};} }
+function saveDB(db){ localStorage.setItem(STORAGE_KEY,JSON.stringify(db)); }
+
+// จับ descriptor
+async function getFaceDescriptor(){
+  const options=new faceapi.TinyFaceDetectorOptions({inputSize:224});
+  const detection = await faceapi.detectSingleFace(video,options).withFaceLandmarks().withFaceDescriptor();
+  if(!detection) return null;
+  return detection.descriptor;
+}
+
+// overlay
+async function drawOverlay(){
+  if(video.readyState<2) return requestAnimationFrame(drawOverlay);
+  const options=new faceapi.TinyFaceDetectorOptions({inputSize:224});
+  const detections=await faceapi.detectAllFaces(video,options).withFaceLandmarks();
+  ctx.clearRect(0,0,overlay.width,overlay.height);
+  detections.forEach(det=>{
+    const box=det.detection.box;
+    ctx.strokeStyle='lime';
+    ctx.lineWidth=2;
+    ctx.strokeRect(box.x,box.y,box.width,box.height);
+  });
+  requestAnimationFrame(drawOverlay);
+}
+drawOverlay();
+
+// ลงทะเบียน
+document.getElementById('registerBtn').addEventListener('click',async()=>{
+  const name=document.getElementById('username').value.trim();
+  if(!name){ status('กรุณาใส่ชื่อผู้ใช้','error'); return; }
+  status('จับใบหน้า...');
+  const desc=await getFaceDescriptor();
+  if(!desc){ status('ไม่พบใบหน้า ลองปรับมุม/แสง','error'); return; }
+  const db=loadDB();
+  db[name]=Array.from(desc);
+  saveDB(db);
+  status(`ลงทะเบียนสำเร็จ: ${name}`,'success');
+});
+
+// ล็อกอิน
+document.getElementById('loginBtn').addEventListener('click',async()=>{
+  status('ตรวจสอบใบหน้า...');
+  const probe=await getFaceDescriptor();
+  if(!probe){ status('ไม่พบใบหน้า ลองปรับมุม/แสง','error'); return; }
+  const db=loadDB();
+  if(!Object.keys(db).length){ status('ยังไม่มีผู้ใช้ลงทะเบียน','error'); return; }
+
+  let best={name:null,dist:Infinity};
+  for(const [name,arr] of Object.entries(db)){
+    const known=new Float32Array(arr);
+    let d=0;
+    for(let i=0;i<probe.length;i++){ const diff=probe[i]-known[i]; d+=diff*diff; }
+    d=Math.sqrt(d);
+    if(d<best.dist) best={name,dist:d};
+  }
+  const THRESHOLD=0.6;
+  if(best.dist<=THRESHOLD){
+    status(`ล็อกอินสำเร็จ: ${best.name}`,'success');
+    document.getElementById('login-section').style.display='none';
+    document.getElementById('home-section').style.display='block';
+  }else{
+    status(`ไม่พบผู้ใช้ตรงกัน (dist=${best.dist.toFixed(3)})`,'error');
+  }
+});
+
+function logout(){
+  document.getElementById('home-section').style.display='none';
+  document.getElementById('login-section').style.display='block';
+}
+</script>
+</body>
+</html>
